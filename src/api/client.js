@@ -1,6 +1,6 @@
 import axios from 'axios';
 
-const GAS_URL = import.meta.env.VITE_GOOGLE_APP_SCRIPT_URL;
+const GAS_URL = import.meta.env.VITE_GAS_APP_URL || import.meta.env.VITE_GOOGLE_APP_SCRIPT_URL;
 
 const client = axios.create({
     baseURL: GAS_URL,
