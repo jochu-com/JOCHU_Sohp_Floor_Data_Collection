@@ -20,36 +20,25 @@ const MOGenerate = () => {
     // Handle Scan Result
     const handleScan = (decodedText) => {
         setScanning(false);
-        // Format: OrderNo|PartNo
-        // If format is different, adjust here. Prompt: "工單編號＋‘｜’＋料號"
-        const parts = decodedText.split('｜'); // Note: Prompt uses fullwidth '｜' or halfwidth '|'?
-        // Prompt says: "工單編號＋‘｜’＋料號" (Fullwidth pipe?)
-        // Most QR generators use halfwidth '|'. I should split by both or check.
-        // Let's try splitting by regex /[:|｜]/
-
-        let pNo = '';
-        let oNo = '';
+        // Format: OrderNo|PartNo|Quantity
+        // Use regex for both halfwidth '|' and fullwidth '｜'
+        const parts = decodedText.split(/[|｜]/).map(s => s.trim());
 
         if (parts.length >= 2) {
-            oNo = parts[0].trim();
-            pNo = parts[1].trim();
-        } else {
-            // Try halfwidth
-            const parts2 = decodedText.split('|');
-            if (parts2.length >= 2) {
-                oNo = parts2[0].trim();
-                pNo = parts2[1].trim();
-            } else {
-                // Fallback: assume only PartNo or just put text in PartNo?
-                // Or maybe User scanned wrong code.
-                setMessage({ type: 'error', text: `格式錯誤: ${decodedText}. 預期: 工單編號|料號` });
-                return;
-            }
-        }
+            setOrderNo(parts[0]);
+            setPartNo(parts[1]);
+            fetchProductInfo(parts[1]);
 
-        setOrderNo(oNo);
-        setPartNo(pNo);
-        fetchProductInfo(pNo);
+            // If quantity is present (3rd part)
+            if (parts.length >= 3) {
+                const qty = parseInt(parts[2]);
+                if (!isNaN(qty)) {
+                    setQuantity(qty.toString());
+                }
+            }
+        } else {
+            setMessage({ type: 'error', text: `格式錯誤: ${decodedText}. 預期: 工單編號|料號|數量` });
+        }
     };
 
     const handleError = (err) => {
