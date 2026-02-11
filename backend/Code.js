@@ -42,18 +42,22 @@ function doPost(e) {
     }
 }
 
-// ... existing code ...
+/**
+ * Helper to create JSON response with CORS headers
+ */
+function createResponse(data) {
+    return ContentService.createTextOutput(JSON.stringify(data))
+        .setMimeType(ContentService.MimeType.JSON);
+}
 
 /**
- * Handle Batch Create MO
- * Expects data.items = [{ partNo, orderNo, quantity, ... }, ...]
- * Expects data.email, data.username
+ * Handle Batch Create MO (Multi-page PDF Logic)
  */
 function handleBatchCreateMO(data) {
     const lock = LockService.getScriptLock();
     try {
         console.log("Starting batchCreateMO with items:", JSON.stringify(data.items));
-        lock.waitLock(60000); // Wait longer for batch processing
+        lock.waitLock(60000); // 延長等待時間至60秒
 
         const ss = SpreadsheetApp.getActiveSpreadsheet();
         const moSheet = ss.getSheetByName(SHEET_NAMES.MO_RECORDS);
@@ -72,8 +76,6 @@ function handleBatchCreateMO(data) {
 
         let lastNum = 0;
         if (moRecords.length > 1) {
-            // Find the MAX sequence number in current month to avoid collision
-            // Reverse loop might be faster if sorted, but safe to filter
             const currentMonthRecords = moRecords.filter(r => String(r[0]).startsWith(prefix));
             if (currentMonthRecords.length > 0) {
                 const lastId = String(currentMonthRecords[currentMonthRecords.length - 1][0]);
@@ -83,14 +85,13 @@ function handleBatchCreateMO(data) {
         }
 
         const generatedMOs = [];
-        const pdfBlobs = [];
+        const newRecords = []; // Collect all successfully created records data
         const errors = [];
 
-        // 2. Process Items
+        // 2. Process Items (Add to Sheet first)
         for (const item of data.items) {
             try {
                 console.log("Processing item:", item.partNo);
-                // Product Lookup
                 const productRow = products.find(row => String(row[0]) === String(item.partNo));
                 if (!productRow) {
                     errors.push(`料號 ${item.partNo} 找不到`);
@@ -98,12 +99,10 @@ function handleBatchCreateMO(data) {
                     continue;
                 }
 
-                // Increment ID
                 lastNum++;
                 const newSeq = String(lastNum).padStart(4, '0');
                 const newMoId = `${prefix}${newSeq}`;
 
-                // Prepare Row
                 const newRecord = [
                     newMoId,
                     today,
@@ -117,21 +116,9 @@ function handleBatchCreateMO(data) {
                     productRow[productRow.length - 1] // Model
                 ];
 
-                // Save to Sheet
                 moSheet.appendRow(newRecord);
-                SpreadsheetApp.flush(); // Flatten changes immediately
-
-                // Generate PDF
-                console.log("Generating PDF for:", newMoId);
-                const pdfBlob = createPDF(newRecord, ss);
-                if (pdfBlob) {
-                    console.log("PDF generated successfully size:", pdfBlob.getBytes().length);
-                    pdfBlobs.push(pdfBlob);
-                } else {
-                    console.error("PDF generation returned null for:", newMoId);
-                }
-
                 generatedMOs.push(newMoId);
+                newRecords.push(newRecord); // Store for batch PDF generation
 
             } catch (err) {
                 console.error("Error processing item:", err);
@@ -139,19 +126,31 @@ function handleBatchCreateMO(data) {
             }
         }
 
-        console.log("Batch processing finished. Generated:", generatedMOs.length, "PDFs:", pdfBlobs.length);
+        SpreadsheetApp.flush(); // Ensure data is saved before PDF generation
 
-        // 3. Send Batch Email
-        if (data.email && pdfBlobs.length > 0) {
+        // 3. Generate Single Combined PDF
+        let pdfBlob = null;
+        if (newRecords.length > 0) {
+            try {
+                console.log("Generating combined PDF for", newRecords.length, "records");
+                pdfBlob = createCombinedPDF(newRecords, ss);
+            } catch (pdfErr) {
+                console.error("Combined PDF Error:", pdfErr);
+                errors.push("PDF生成失敗: " + pdfErr.message);
+            }
+        }
+
+        console.log("Batch finished. MOs:", generatedMOs.length, "PDF Blob:", pdfBlob ? "Created" : "Null");
+
+        // 4. Send Batch Email (Single Attachment)
+        if (data.email && pdfBlob) {
             console.log("Sending email to:", data.email);
             MailApp.sendEmail({
                 to: data.email,
-                subject: `批量製令通知 - ${generatedMOs.length} 筆成功`,
-                body: `您好，\n\n已為您批量生成 ${generatedMOs.length} 筆製令。\n單號範圍: ${generatedMOs[0]} ~ ${generatedMOs[generatedMOs.length - 1]}\n\n請查收附件。\n\n系統自動發送`,
-                attachments: pdfBlobs
+                subject: `批量製令通知 - ${generatedMOs.length} 筆成功 (合併檔)`,
+                body: `您好，\n\n已為您批量生成 ${generatedMOs.length} 筆製令。\n單號範圍: ${generatedMOs[0]} ~ ${generatedMOs[generatedMOs.length - 1]}\n\n請查收附件 (已合併為一個 PDF)。\n\n系統自動發送`,
+                attachments: [pdfBlob]
             });
-        } else {
-            console.warn("Skip email. Email:", data.email, "PDF count:", pdfBlobs.length);
         }
 
         return createResponse({
@@ -170,20 +169,12 @@ function handleBatchCreateMO(data) {
 }
 
 /**
- * Helper to create JSON response with CORS headers
- */
-function createResponse(data) {
-    return ContentService.createTextOutput(JSON.stringify(data))
-        .setMimeType(ContentService.MimeType.JSON);
-}
-
-/**
  * Handle User Registration
  */
 function handleRegister(data) {
     const lock = LockService.getScriptLock();
     try {
-        lock.waitLock(30000); // Wait up to 30 seconds for lock
+        lock.waitLock(30000);
 
         const ss = SpreadsheetApp.getActiveSpreadsheet();
         const userSheet = ss.getSheetByName(SHEET_NAMES.USERS);
@@ -191,29 +182,25 @@ function handleRegister(data) {
         if (!userSheet) return createResponse({ status: 'error', message: 'User sheet not found' });
 
         const users = userSheet.getDataRange().getValues();
-        // Check if username exists (Column C: index 2)
         const existingUser = users.find(row => row[2] === data.username);
         if (existingUser) {
             return createResponse({ status: 'error', message: '此用戶名稱已存在！' });
         }
 
-        // Generate New UID
         let lastUid = 0;
-        if (users.length > 1) { // has data rows
+        if (users.length > 1) {
             const lastRow = users[users.length - 1];
-            const lastUidStr = String(lastRow[0]); // Column A
-            lastUid = parseInt(lastUidStr, 10) || 0;
+            lastUid = parseInt(String(lastRow[0]), 10) || 0;
         }
         const newUid = String(lastUid + 1).padStart(6, '0');
 
-        // Hash Password
         const passwordHash = Utilities.base64Encode(
             Utilities.computeDigest(Utilities.DigestAlgorithm.SHA_256, data.password)
         );
 
         userSheet.appendRow([
             newUid,
-            '一般用戶', // Default type
+            '一般用戶',
             data.username,
             passwordHash,
             data.email
@@ -237,7 +224,7 @@ function handleLogin(data) {
 
     if (!userSheet) return createResponse({ status: 'error', message: 'User sheet not found' });
 
-    const users = userSheet.getDataRange().getValues(); // Header is row 0
+    const users = userSheet.getDataRange().getValues();
 
     const userRow = users.find(row => row[2] === data.username);
 
@@ -245,22 +232,19 @@ function handleLogin(data) {
         return createResponse({ status: 'error', message: '此用戶名稱不存在！' });
     }
 
-    // Check Password
     const inputHash = Utilities.base64Encode(
         Utilities.computeDigest(Utilities.DigestAlgorithm.SHA_256, data.password)
     );
 
-    // Stored password is in Column D (index 3)
     if (inputHash !== userRow[3]) {
         return createResponse({ status: 'error', message: '密碼錯誤！' });
     }
 
-    // Success
     return createResponse({
         status: 'success',
         user: {
             uid: userRow[0],
-            type: userRow[1], // Column B
+            type: userRow[1],
             username: userRow[2],
             email: userRow[4]
         }
@@ -277,8 +261,6 @@ function handleGetProductInfo(data) {
     if (!productSheet) return createResponse({ status: 'error', message: 'Product sheet not found' });
 
     const products = productSheet.getDataRange().getValues();
-    // PartNo is Column A (index 0)
-
     const productRow = products.find(row => String(row[0]) === String(data.partNo));
 
     if (!productRow) {
@@ -291,13 +273,11 @@ function handleGetProductInfo(data) {
         customerPartNo: productRow[2],
         material: productRow[3],
         stations: [],
-        model: productRow[productRow.length - 1] // Last column
+        model: productRow[productRow.length - 1]
     };
 
-    // Stations are from index 4 to length-2 (Machine is last)
-    // Pairs of (Station, Time)
     for (let i = 4; i < productRow.length - 1; i += 2) {
-        if (productRow[i]) { // If station name exists
+        if (productRow[i]) {
             productData.stations.push({
                 name: productRow[i],
                 time: productRow[i + 1]
@@ -309,7 +289,7 @@ function handleGetProductInfo(data) {
 }
 
 /**
- * Handle Create MO (Manufacturing Order)
+ * Handle Single Create MO
  */
 function handleCreateMO(data) {
     const lock = LockService.getScriptLock();
@@ -318,57 +298,50 @@ function handleCreateMO(data) {
 
         const ss = SpreadsheetApp.getActiveSpreadsheet();
         const moSheet = ss.getSheetByName(SHEET_NAMES.MO_RECORDS);
-        const productSheet = ss.getSheetByName(SHEET_NAMES.PRODUCTS); // Re-fetch product data for consistency
+        const productSheet = ss.getSheetByName(SHEET_NAMES.PRODUCTS);
 
         if (!moSheet) return createResponse({ status: 'error', message: 'MO Record sheet not found' });
 
-        // 1. Generate MO Number
         const today = new Date();
         const year = today.getFullYear();
         const month = String(today.getMonth() + 1).padStart(2, '0');
-        const prefix = `MO-${year}${month}`; // MO-202310
+        const prefix = `MO-${year}${month}`;
 
-        // Find last MO number to increment
         const moRecords = moSheet.getDataRange().getValues();
         let lastNum = 0;
 
         if (moRecords.length > 1) {
             const lastRecord = moRecords[moRecords.length - 1];
-            const lastMoId = String(lastRecord[0]); // Column A: MO-YYYYMM-XXXX
-            const currentPrefix = `MO-${year}${month}`;
-            if (lastMoId.startsWith(currentPrefix)) {
-                const suffix = lastMoId.substring(currentPrefix.length); // get remainder
+            const lastMoId = String(lastRecord[0]);
+            if (lastMoId.startsWith(prefix)) {
+                const suffix = lastMoId.substring(prefix.length);
                 lastNum = parseInt(suffix, 10) || 0;
             }
         }
 
         const newSeq = String(lastNum + 1).padStart(4, '0');
-        const newMoId = `MO-${year}${month}${newSeq}`;
+        const newMoId = `${prefix}${newSeq}`;
 
-        // 2. Get Product Data again (to be safe and get all fields)
         const products = productSheet.getDataRange().getValues();
         const productRow = products.find(row => String(row[0]) === String(data.partNo));
         if (!productRow) return createResponse({ status: 'error', message: 'Product not found' });
 
-        // 3. Prepare Row Data
         const newRecord = [
             newMoId,
-            today, // Date object
+            today,
             data.partNo,
-            data.orderNo, // From QR Code
-            productRow[1], // Name
-            productRow[2], // Customer Part No
-            productRow[3], // Material
-            data.quantity, // Production Quantity
-            // Stations (copy from productRow index 4 to 21 (9 stations * 2 = 18 cols))
+            data.orderNo,
+            productRow[1],
+            productRow[2],
+            productRow[3],
+            data.quantity,
             ...productRow.slice(4, 22),
-            productRow[productRow.length - 1] // Model
+            productRow[productRow.length - 1]
         ];
 
-        // Append to MO Records
         moSheet.appendRow(newRecord);
 
-        // 4. Generate PDF
+        // Generate PDF
         let pdfBlob;
         try {
             pdfBlob = createPDF(newRecord, ss);
@@ -380,7 +353,6 @@ function handleCreateMO(data) {
             return createResponse({ status: 'success', message: '製令已建立，但 PDF 生成異常 (Unknown)', moNumber: newMoId });
         }
 
-        // 5. Send Email
         if (data.email) {
             MailApp.sendEmail({
                 to: data.email,
@@ -400,18 +372,18 @@ function handleCreateMO(data) {
 }
 
 /**
- * Generate PDF from Template
+ * Generate Single PDF from Template (Wrapper using fillSheetWithData logic via temp file)
  */
 function createPDF(recordData, ss) {
     try {
         const templateSheet = ss.getSheetByName(SHEET_NAMES.MO_TEMPLATE);
         if (!templateSheet) throw new Error('Template sheet not found');
 
-        // 1. Copy the WHOLE spreadsheet to preserve styles
+        // Copy template to temp file
         const tempFile = DriveApp.getFileById(ss.getId()).makeCopy('Temp_MO_' + recordData[0]);
         const tempSS = SpreadsheetApp.open(tempFile);
 
-        // 2. Remove all sheets EXCEPT the template to ensure clean PDF
+        // Remove non-template sheets
         const sheets = tempSS.getSheets();
         for (const sheet of sheets) {
             if (sheet.getName() !== SHEET_NAMES.MO_TEMPLATE) {
@@ -422,206 +394,20 @@ function createPDF(recordData, ss) {
         const workingSheet = tempSS.getSheetByName(SHEET_NAMES.MO_TEMPLATE);
         if (!workingSheet) throw new Error('Template sheet lost during processing');
 
-        // 3. Fill data
-        const replacements = {
-            '{{MO_ID}}': recordData[0],
-            '{{DATE}}': Utilities.formatDate(recordData[1], Session.getScriptTimeZone(), 'yyyy/MM/dd'),
-            '{{PART_NO}}': recordData[2],
-            '{{ORDER_NO}}': recordData[3],
-            '{{NAME}}': recordData[4],
-            '{{CUST_PART}}': recordData[5],
-            '{{MATERIAL}}': recordData[6],
-            '{{QTY}}': recordData[7],
-            '{{MODEL}}': recordData[recordData.length - 1],
-        };
+        // --- Use Shared Logic to Fill Data ---
+        fillSheetWithData(workingSheet, recordData);
+        // -------------------------------------
 
-        // Add Station and Time placeholders (1 to 9)
-        for (let i = 1; i <= 9; i++) {
-            const nameIndex = 8 + (i - 1) * 2;
-            const timeIndex = 9 + (i - 1) * 2;
-
-            const stName = (nameIndex < recordData.length) ? recordData[nameIndex] : '';
-            const stTime = (timeIndex < recordData.length) ? recordData[timeIndex] : '';
-
-            replacements[`{{STATION_${i}}}`] = stName || '';
-            replacements[`{{TIME_${i}}}`] = stTime ? `標準工時 ${stTime} 秒` : '';
-        }
-
-        // Perform replacement
-        for (const [key, value] of Object.entries(replacements)) {
-            workingSheet.createTextFinder(key).replaceAllWith(String(value));
-        }
-
-        // --- Insert Image Logic (Robust + Resize + Multiple) ---
-        try {
-            const partNo = recordData[2];
-            let imageBlob = null;
-            let debugDetails = [];
-
-            // 1. Get Image Blob (Load once)
-            // Strategy: Direct Access via Folder ID (User Provided)
-            // ID: 1HN0in8_fNRsD4E0mfdoW95HM-sJ1SStn
-
-            let folder;
-            try {
-                folder = DriveApp.getFolderById('1HN0in8_fNRsD4E0mfdoW95HM-sJ1SStn');
-            } catch (e) {
-                debugDetails.push(`Folder Access Error: ${e.message}`);
-            }
-
-            if (folder) {
-                try {
-                    let fileIter = folder.getFilesByName(`${partNo}.jpg`);
-                    if (!fileIter.hasNext()) {
-                        fileIter = folder.getFilesByName(`${partNo}.jpeg`);
-                    }
-
-                    if (fileIter.hasNext()) {
-                        imageBlob = fileIter.next().getBlob();
-                    } else {
-                        debugDetails.push(`File ${partNo}.jpg/.jpeg not found in folder`);
-                    }
-                } catch (e) {
-                    debugDetails.push(`File Access Error: ${e.message}`);
-                }
-            } else {
-                debugDetails.push("Folder ID '1HN0in8_fNRsD4E0mfdoW95HM-sJ1SStn' not found/accessible");
-            }
-
-            // 2. Find ALL Placeholders and Insert
-            // Use regex to find {{IMAGE}}, {{ IMAGE }} etc.
-            // Reset text finder for loop
-            let textFinder = workingSheet.createTextFinder('\\{\\{\\s*IMAGE\\s*\\}\\}').useRegularExpression(true);
-            let occurrences = textFinder.findAll(); // Get all locations first
-
-            if (occurrences.length === 0) {
-                // Fallback simple search
-                textFinder = workingSheet.createTextFinder('{{IMAGE}}').useRegularExpression(false);
-                occurrences = textFinder.findAll();
-            }
-
-            if (occurrences.length > 0) {
-                // Determine what to write
-                if (imageBlob) {
-                    // Loop through ALL occurrences
-                    for (const cell of occurrences) {
-                        const row = cell.getRow();
-                        const col = cell.getColumn();
-
-                        // Clear text
-                        cell.clearContent();
-
-                        // Insert Image
-                        const img = workingSheet.insertImage(imageBlob, col, row);
-
-                        // --- RESIZE LOGIC ---
-                        const MAX_WIDTH = 300;
-                        const MAX_HEIGHT = 200;
-
-                        const originalWidth = img.getWidth();
-                        const originalHeight = img.getHeight();
-                        const ratio = originalWidth / originalHeight;
-
-                        let newWidth = originalWidth;
-                        let newHeight = originalHeight;
-
-                        if (newWidth > MAX_WIDTH) {
-                            newWidth = MAX_WIDTH;
-                            newHeight = newWidth / ratio;
-                        }
-
-                        if (newHeight > MAX_HEIGHT) {
-                            newHeight = MAX_HEIGHT;
-                            newWidth = newHeight * ratio;
-                        }
-
-                        img.setWidth(Math.round(newWidth));
-                        img.setHeight(Math.round(newHeight));
-                    }
-                } else {
-                    // Image NOT found, update ALL matched cells with error msg
-                    const msg = debugDetails.length > 0 ? debugDetails.join(", ") : "Unknown";
-                    for (const cell of occurrences) {
-                        cell.setValue(`(無圖片: ${msg})`);
-                    }
-                }
-            } else {
-                console.warn("Placeholder {{IMAGE}} not found");
-                try {
-                    workingSheet.appendRow([""]);
-                    workingSheet.appendRow(["[Debug]: Template missing {{IMAGE}} placeholder"]);
-                } catch (e) { }
-            }
-        } catch (imgErr) {
-            console.warn("Image error: " + imgErr.toString());
-            try {
-                workingSheet.appendRow([""]);
-                workingSheet.appendRow(["[Debug]: Image Error: " + imgErr.toString()]);
-            } catch (e) { }
-        }
-        // ---------------------------
-
-        // --- Insert QR Code Logic ---
-        try {
-            const moId = recordData[0]; // MO ID is the first element
-            const qrUrl = `https://quickchart.io/qr?text=${encodeURIComponent(moId)}&size=300`;
-
-            // Fetch QR Code Image
-            const qrResponse = UrlFetchApp.fetch(qrUrl);
-            if (qrResponse.getResponseCode() === 200) {
-                const qrBlob = qrResponse.getBlob();
-
-                // Find {{QR_CODE}} placeholder
-                let qrFinder = workingSheet.createTextFinder('\\{\\{\\s*QR_CODE\\s*\\}\\}').useRegularExpression(true);
-                let qrOccurrences = qrFinder.findAll();
-
-                if (qrOccurrences.length === 0) {
-                    qrFinder = workingSheet.createTextFinder('{{QR_CODE}}').useRegularExpression(false);
-                    qrOccurrences = qrFinder.findAll();
-                }
-
-                if (qrOccurrences.length > 0) {
-                    for (const cell of qrOccurrences) {
-                        const row = cell.getRow();
-                        const col = cell.getColumn();
-
-                        cell.clearContent();
-                        const img = workingSheet.insertImage(qrBlob, col, row);
-
-                        // Resize QR Code (e.g. 250x250 for user request)
-                        img.setWidth(250);
-                        img.setHeight(250);
-                    }
-                } else {
-                    console.warn("Placeholder {{QR_CODE}} not found");
-                }
-            } else {
-                console.warn("Failed to fetch QR Code from API");
-            }
-        } catch (qrErr) {
-            console.warn("QR Code Error: " + qrErr.toString());
-            // Optional: Write error to sheet for debug?
-        }
-        // ---------------------------
-
-        // Save and Flush
         SpreadsheetApp.flush();
 
-        // 4. Export PDF with specific options (A4 Landscape)
-        // We use UrlFetchApp to access the export endpoint for more control
         const url = `https://docs.google.com/spreadsheets/d/${tempSS.getId()}/export?`
-            + `format=pdf`
-            + `&size=A4`              // A4 Size
-            + `&portrait=false`       // Landscape
-            + `&fitw=true`            // Fit to width
-            + `&gridlines=false`      // No gridlines
-            + `&gid=${workingSheet.getSheetId()}`; // Specific Sheet
+            + `format=pdf&size=A4&portrait=false&fitw=true&gridlines=false`
+            + `&top_margin=0.05&bottom_margin=0.05&left_margin=0.05&right_margin=0.05`
+            + `&gid=${workingSheet.getSheetId()}`;
 
         const token = ScriptApp.getOAuthToken();
         const response = UrlFetchApp.fetch(url, {
-            headers: {
-                'Authorization': 'Bearer ' + token
-            },
+            headers: { 'Authorization': 'Bearer ' + token },
             muteHttpExceptions: true
         });
 
@@ -631,26 +417,199 @@ function createPDF(recordData, ss) {
         }
 
         const pdfBlob = response.getBlob().setName(`製令單_${recordData[0]}.pdf`);
-
-        // 5. Cleanup
         DriveApp.getFileById(tempFile.getId()).setTrashed(true);
 
         return pdfBlob;
 
     } catch (e) {
         console.error("createPDF Fatal Error: " + e.toString());
-        throw e; // Throw error to be caught by caller and sent to UI
+        throw e;
     }
 }
 
 /**
- * Helper function to trigger Authorization scopes.
- * Run this function in the GAS Editor once to authorize new scopes (UrlFetchApp, ScriptApp).
+ * NEW: Generate Combined PDF for Multiple Records
  */
-function testAuth() {
-    ScriptApp.getOAuthToken();
-    UrlFetchApp.fetch('https://www.google.com');
-    DriveApp.getRootFolder();
-    SpreadsheetApp.getActiveSpreadsheet();
-    console.log("Authorization Successful");
+function createCombinedPDF(allRecords, ss) {
+    let tempFile = null;
+    try {
+        const templateSheet = ss.getSheetByName(SHEET_NAMES.MO_TEMPLATE);
+        if (!templateSheet) throw new Error('Template sheet not found');
+
+        // 1. Copy the WHOLE spreadsheet to a temp file
+        const fileName = `批量製令單(共${allRecords.length}筆).pdf`;
+        tempFile = DriveApp.getFileById(ss.getId()).makeCopy('Temp_Batch_MO_' + new Date().getTime());
+        const tempSS = SpreadsheetApp.open(tempFile);
+
+        // 2. Loop through records and create a sheet for each
+        const createdSheetsIds = [];
+        const tempTemplate = tempSS.getSheetByName(SHEET_NAMES.MO_TEMPLATE); // Use the one inside tempSS
+
+        for (const record of allRecords) {
+            const sheetName = record[0]; // MO ID
+            // Copy the template sheet WITHIN the temp spreadsheet
+            const targetSheet = tempTemplate.copyTo(tempSS);
+            targetSheet.setName(sheetName);
+
+            // Fill data
+            fillSheetWithData(targetSheet, record);
+
+            createdSheetsIds.push(targetSheet.getSheetId());
+        }
+
+        // 3. Delete original template and other existing sheets, keep ONLY created ones
+        const allSheets = tempSS.getSheets();
+        for (const sheet of allSheets) {
+            if (!createdSheetsIds.includes(sheet.getSheetId())) {
+                tempSS.deleteSheet(sheet);
+            }
+        }
+
+        SpreadsheetApp.flush();
+
+        // 4. Export the ENTIRE temp spreadsheet as PDF (no gid = all sheets)
+        // 5px ~= 0.052 inches (96DPI)
+        const url = `https://docs.google.com/spreadsheets/d/${tempSS.getId()}/export?`
+            + `format=pdf`
+            + `&size=A4`
+            + `&portrait=false`
+            + `&fitw=true`
+            + `&gridlines=false`
+            + `&top_margin=0.05`
+            + `&bottom_margin=0.05`
+            + `&left_margin=0.05`
+            + `&right_margin=0.05`;
+
+        const token = ScriptApp.getOAuthToken();
+        const response = UrlFetchApp.fetch(url, {
+            headers: { 'Authorization': 'Bearer ' + token },
+            muteHttpExceptions: true
+        });
+
+        if (response.getResponseCode() !== 200) {
+            throw new Error("PDF Export Failed: " + response.getContentText());
+        }
+
+        return response.getBlob().setName(fileName);
+
+    } catch (e) {
+        console.error("createCombinedPDF Error: " + e.toString());
+        throw e;
+    } finally {
+        // Cleanup temp file
+        if (tempFile) {
+            try { DriveApp.getFileById(tempFile.getId()).setTrashed(true); } catch (e) { }
+        }
+    }
+}
+
+/**
+ * Shared Helper: Fill a sheet with MO data (Text + Image + QR)
+ */
+function fillSheetWithData(sheet, recordData) {
+    const replacements = {
+        '{{MO_ID}}': recordData[0],
+        '{{DATE}}': Utilities.formatDate(recordData[1], Session.getScriptTimeZone(), 'yyyy/MM/dd'),
+        '{{PART_NO}}': recordData[2],
+        '{{ORDER_NO}}': recordData[3],
+        '{{NAME}}': recordData[4],
+        '{{CUST_PART}}': recordData[5],
+        '{{MATERIAL}}': recordData[6],
+        '{{QTY}}': recordData[7],
+        '{{MODEL}}': recordData[recordData.length - 1],
+    };
+
+    // Stations
+    for (let i = 1; i <= 9; i++) {
+        const nameIndex = 8 + (i - 1) * 2;
+        const timeIndex = 9 + (i - 1) * 2;
+        const stName = (nameIndex < recordData.length) ? recordData[nameIndex] : '';
+        const stTime = (timeIndex < recordData.length) ? recordData[timeIndex] : '';
+        replacements[`{{STATION_${i}}}`] = stName || '';
+        replacements[`{{TIME_${i}}}`] = stTime ? `標準工時 ${stTime} 秒` : '';
+    }
+
+    // Text Replacement
+    for (const [key, value] of Object.entries(replacements)) {
+        sheet.createTextFinder(key).replaceAllWith(String(value));
+    }
+
+    // --- Image Logic ---
+    try {
+        const partNo = recordData[2];
+        let imageBlob = null;
+
+        // Try to get image
+        try {
+            const folder = DriveApp.getFolderById('1HN0in8_fNRsD4E0mfdoW95HM-sJ1SStn');
+            let fileIter = folder.getFilesByName(`${partNo}.jpg`);
+            if (!fileIter.hasNext()) fileIter = folder.getFilesByName(`${partNo}.jpeg`);
+            if (fileIter.hasNext()) imageBlob = fileIter.next().getBlob();
+        } catch (e) {
+            console.warn("Image fetch error: " + e.message);
+        }
+
+        // Insert Image
+        let tf = sheet.createTextFinder('\\{\\{\\s*IMAGE\\s*\\}\\}').useRegularExpression(true);
+        let matches = tf.findAll();
+        if (matches.length === 0) {
+            tf = sheet.createTextFinder('{{IMAGE}}').useRegularExpression(false);
+            matches = tf.findAll();
+        }
+
+        if (matches.length > 0) {
+            if (imageBlob) {
+                for (const cell of matches) {
+                    const r = cell.getRow();
+                    const c = cell.getColumn();
+                    cell.clearContent();
+                    const img = sheet.insertImage(imageBlob, c, r);
+
+                    // Resize Logic
+                    const MAX_W = 300;
+                    const MAX_H = 200;
+                    const w = img.getWidth();
+                    const h = img.getHeight();
+                    const ratio = w / h;
+
+                    let nw = w, nh = h;
+                    if (nw > MAX_W) { nw = MAX_W; nh = nw / ratio; }
+                    if (nh > MAX_H) { nh = MAX_H; nw = nh * ratio; }
+
+                    img.setWidth(Math.round(nw));
+                    img.setHeight(Math.round(nh));
+                }
+            } else {
+                matches.forEach(c => c.setValue('(無圖片)'));
+            }
+        }
+    } catch (e) {
+        console.warn("Insert image error: " + e.message);
+    }
+
+    // --- QR Code Logic ---
+    try {
+        const moId = recordData[0];
+        const qrUrl = `https://quickchart.io/qr?text=${encodeURIComponent(moId)}&size=300`;
+        const qrResp = UrlFetchApp.fetch(qrUrl);
+        if (qrResp.getResponseCode() === 200) {
+            const qrBlob = qrResp.getBlob();
+            let tf = sheet.createTextFinder('\\{\\{\\s*QR_CODE\\s*\\}\\}').useRegularExpression(true);
+            let matches = tf.findAll();
+            if (matches.length === 0) {
+                tf = sheet.createTextFinder('{{QR_CODE}}').useRegularExpression(false);
+                matches = tf.findAll();
+            }
+            for (const cell of matches) {
+                const r = cell.getRow();
+                const c = cell.getColumn();
+                cell.clearContent();
+                const img = sheet.insertImage(qrBlob, c, r);
+                img.setWidth(250);
+                img.setHeight(250);
+            }
+        }
+    } catch (e) {
+        console.warn("QR code error: " + e.message);
+    }
 }
