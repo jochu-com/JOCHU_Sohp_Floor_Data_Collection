@@ -177,7 +177,7 @@ const MOGenerate = () => {
     return (
         <div className="max-w-4xl mx-auto p-4 space-y-6">
             <div className="flex justify-between items-center bg-white p-4 rounded-lg shadow-sm">
-                <h1 className="text-2xl font-bold text-gray-800">製令生成 (Batch Mode)</h1>
+                <h1 className="text-2xl font-bold text-gray-800">製令生成</h1>
                 <div className="flex items-center gap-3">
                     <Button
                         variant="outline"
@@ -187,7 +187,7 @@ const MOGenerate = () => {
                         title="前往製令補印頁面"
                     >
                         <Printer className="w-4 h-4" />
-                        <span>補印/查詢</span>
+                        <span>補印</span>
                     </Button>
                     <div className="text-sm text-gray-500 font-medium bg-gray-100 px-3 py-1 rounded-full">
                         {user?.username}
@@ -208,7 +208,7 @@ const MOGenerate = () => {
                     onClick={() => { setMessage(null); setScanning(true); }}
                     className="w-full h-12 text-lg bg-indigo-600 hover:bg-indigo-700"
                 >
-                    <Camera className="mr-2" /> 掃描加入清單 (Scan to Add)
+                    <Camera className="mr-2" /> 掃描QRCode
                 </Button>
             )}
 
