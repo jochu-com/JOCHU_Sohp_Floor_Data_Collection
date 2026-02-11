@@ -34,11 +34,60 @@ function doPost(e) {
                 return handleCreateMO(data);
             case 'batchCreateMO':
                 return handleBatchCreateMO(data);
+            case 'printMOByOrder': // New Action
+                return handlePrintMOByOrder(data);
             default:
                 return createResponse({ status: 'error', message: 'Invalid action' });
         }
     } catch (err) {
         return createResponse({ status: 'error', message: err.toString() });
+    }
+}
+
+/**
+ * Handle Print MO By Order (Search & Download)
+ */
+function handlePrintMOByOrder(data) {
+    // No lock needed for reading and generating PDF usually, but safer if high concurrency
+    // Reading data...
+    const ss = SpreadsheetApp.getActiveSpreadsheet();
+    const moSheet = ss.getSheetByName(SHEET_NAMES.MO_RECORDS);
+
+    if (!moSheet) return createResponse({ status: 'error', message: 'MO Records sheet not found' });
+
+    const orderNo = String(data.orderNo || '').trim();
+    if (!orderNo) return createResponse({ status: 'error', message: '請輸入工單單號' });
+
+    const moRecords = moSheet.getDataRange().getValues();
+    // Header is row 0. Data starts row 1.
+    // Index 3 is OrderNo (Column D)
+
+    // Find all matching records
+    const matchingRecords = moRecords.filter((row, index) => {
+        if (index === 0) return false; // Skip header
+        return String(row[3]) === orderNo;
+    });
+
+    if (matchingRecords.length === 0) {
+        return createResponse({ status: 'error', message: `找不到工單號碼 ${orderNo} 的任何製令紀錄` });
+    }
+
+    try {
+        // Generate PDF
+        const pdfBlob = createCombinedPDF(matchingRecords, ss);
+
+        // Convert to Base64
+        const base64Data = Utilities.base64Encode(pdfBlob.getBytes());
+
+        return createResponse({
+            status: 'success',
+            message: `找到 ${matchingRecords.length} 筆製令，準備下載...`,
+            fileName: `工單_${orderNo}_製令彙整.pdf`,
+            pdfBase64: base64Data
+        });
+
+    } catch (e) {
+        return createResponse({ status: 'error', message: 'PDF生成失敗: ' + e.toString() });
     }
 }
 
@@ -153,9 +202,14 @@ function handleBatchCreateMO(data) {
             });
         }
 
+        let resultMsg = `成功生成 ${generatedMOs.length} 筆製令。`;
+        if (errors.length > 0) {
+            resultMsg += `\n\n=== 失敗詳情 ===\n${errors.join('\n')}`;
+        }
+
         return createResponse({
             status: 'success',
-            message: `成功生成 ${generatedMOs.length} 筆製令。` + (errors.length > 0 ? `\n(警告: 有 ${errors.length} 筆失敗)` : ''),
+            message: resultMsg,
             generatedMOs: generatedMOs,
             errors: errors
         });
@@ -401,8 +455,9 @@ function createPDF(recordData, ss) {
         SpreadsheetApp.flush();
 
         const url = `https://docs.google.com/spreadsheets/d/${tempSS.getId()}/export?`
-            + `format=pdf&size=A4&portrait=false&fitw=true&gridlines=false`
-            + `&top_margin=0.05&bottom_margin=0.05&left_margin=0.05&right_margin=0.05`
+            + `format=pdf&size=A4&portrait=false&gridlines=false` // removed fitw=true
+            + `&scale=3` // Fit to Height
+            + `&top_margin=0.10&bottom_margin=0.10&left_margin=0.10&right_margin=0.10`
             + `&gid=${workingSheet.getSheetId()}`;
 
         const token = ScriptApp.getOAuthToken();
@@ -468,17 +523,18 @@ function createCombinedPDF(allRecords, ss) {
         SpreadsheetApp.flush();
 
         // 4. Export the ENTIRE temp spreadsheet as PDF (no gid = all sheets)
-        // 5px ~= 0.052 inches (96DPI)
+        // 10px ~= 0.104 inches (96DPI) -> 0.1
         const url = `https://docs.google.com/spreadsheets/d/${tempSS.getId()}/export?`
             + `format=pdf`
             + `&size=A4`
             + `&portrait=false`
-            + `&fitw=true`
+            // + `&fitw=true` // Remove fitw, use scale=3 for Fit to Height
+            + `&scale=3`      // 3 = Fit to Height
             + `&gridlines=false`
-            + `&top_margin=0.05`
-            + `&bottom_margin=0.05`
-            + `&left_margin=0.05`
-            + `&right_margin=0.05`;
+            + `&top_margin=0.10`
+            + `&bottom_margin=0.10`
+            + `&left_margin=0.10`
+            + `&right_margin=0.10`;
 
         const token = ScriptApp.getOAuthToken();
         const response = UrlFetchApp.fetch(url, {
@@ -566,15 +622,15 @@ function fillSheetWithData(sheet, recordData) {
                     const img = sheet.insertImage(imageBlob, c, r);
 
                     // Resize Logic
-                    const MAX_W = 300;
-                    const MAX_H = 200;
+                    // 1. Force Width = 175
+                    const TARGET_WIDTH = 175;
+
                     const w = img.getWidth();
                     const h = img.getHeight();
-                    const ratio = w / h;
+                    const ratio = h / w; // height per unit of width
 
-                    let nw = w, nh = h;
-                    if (nw > MAX_W) { nw = MAX_W; nh = nw / ratio; }
-                    if (nh > MAX_H) { nh = MAX_H; nw = nh * ratio; }
+                    const nw = TARGET_WIDTH;
+                    const nh = nw * ratio;
 
                     img.setWidth(Math.round(nw));
                     img.setHeight(Math.round(nh));
@@ -605,8 +661,8 @@ function fillSheetWithData(sheet, recordData) {
                 const c = cell.getColumn();
                 cell.clearContent();
                 const img = sheet.insertImage(qrBlob, c, r);
-                img.setWidth(250);
-                img.setHeight(250);
+                img.setWidth(175);
+                img.setHeight(175);
             }
         }
     } catch (e) {

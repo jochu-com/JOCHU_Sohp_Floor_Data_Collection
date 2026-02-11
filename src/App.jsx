@@ -2,6 +2,7 @@ import { Routes, Route, Navigate } from 'react-router-dom';
 import SignIn from './pages/SignIn';
 import SignUp from './pages/SignUp';
 import MOGenerate from './pages/MOGenerate';
+import MOPrint from './pages/MOPrint';
 import { useAuth } from './context/AuthContext';
 
 // Protected Route Component
@@ -29,6 +30,14 @@ function App() {
         element={
           <ProtectedRoute requiredType="製令開立">
             <MOGenerate />
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/mo-print"
+        element={
+          <ProtectedRoute requiredType="製令開立">
+            <MOPrint />
           </ProtectedRoute>
         }
       />

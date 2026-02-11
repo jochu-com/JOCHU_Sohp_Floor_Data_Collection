@@ -5,7 +5,7 @@ import Scanner from '../components/Scanner';
 import { Button } from '../components/ui/Button';
 import { Input } from '../components/ui/Input';
 import { Card, CardHeader, CardTitle, CardContent } from '../components/ui/Card';
-import { Loader2, Camera, Search, FileText, Plus, Trash2, List } from 'lucide-react';
+import { Loader2, Camera, Search, FileText, Plus, Trash2, List, Printer } from 'lucide-react';
 
 const MOGenerate = () => {
     const { user } = useAuth();
@@ -180,7 +180,18 @@ const MOGenerate = () => {
         <div className="max-w-4xl mx-auto p-4 space-y-6">
             <div className="flex justify-between items-center">
                 <h1 className="text-2xl font-bold">製令生成 (Batch Mode)</h1>
-                <div className="text-sm text-gray-500">操作者: {user?.username}</div>
+                <div className="flex gap-2">
+                    <Button
+                        variant="ghost"
+                        size="sm"
+                        onClick={() => window.location.href = '#/mo-print'}
+                        className="text-gray-600"
+                        title="補印製令"
+                    >
+                        <Printer className="w-5 h-5" />
+                    </Button>
+                    <div className="text-sm text-gray-500 self-center">操作者: {user?.username}</div>
+                </div>
             </div>
 
             {/* Message Banner */}

@@ -13,3 +13,7 @@ export const createBatchMO = async (items, email, username) => {
     // items: [{ partNo, orderNo, quantity }, ...]
     return postToGAS('batchCreateMO', { items, email, username });
 };
+
+export const printMOByOrder = async (orderNo) => {
+    return postToGAS('printMOByOrder', { orderNo });
+};
