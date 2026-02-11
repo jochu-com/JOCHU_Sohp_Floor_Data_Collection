@@ -5,10 +5,10 @@ import { printMOByOrder } from '../api/mo';
 import { Button } from '../components/ui/Button';
 import { Input } from '../components/ui/Input';
 import { Card, CardHeader, CardTitle, CardContent } from '../components/ui/Card';
-import { Loader2, Printer, Search, Download } from 'lucide-react';
+import { Loader2, Printer, Search, Download, LogOut } from 'lucide-react';
 
 const MOPrint = () => {
-    const { user } = useAuth();
+    const { user, logout } = useAuth();
     const navigate = useNavigate();
     const [orderNo, setOrderNo] = useState('');
     const [loading, setLoading] = useState(false);
@@ -72,7 +72,16 @@ const MOPrint = () => {
                     </Button>
                     <h1 className="text-2xl font-bold text-gray-800">製令補印/查詢</h1>
                 </div>
-                <div className="text-sm text-gray-500 font-medium bg-gray-100 px-3 py-1 rounded-full">{user?.username}</div>
+                <div className="flex items-center gap-2 text-sm text-gray-500 font-medium bg-gray-100 px-3 py-1 rounded-full">
+                    {user?.username}
+                    <button
+                        onClick={logout}
+                        title="登出"
+                        className="ml-2 text-gray-400 hover:text-red-500 transition-colors"
+                    >
+                        <LogOut className="w-4 h-4" />
+                    </button>
+                </div>
             </div>
 
             <Card>
@@ -104,13 +113,15 @@ const MOPrint = () => {
             </Card>
 
             {/* Message Banner */}
-            {message && (
-                <div className={`p-4 rounded-md ${message.type === 'success' ? 'bg-green-100 text-green-800' : 'bg-red-100 text-red-800'} whitespace-pre-line`}>
-                    {message.type === 'success' && <Download className="inline-block w-5 h-5 mr-2" />}
-                    {message.text}
-                </div>
-            )}
-        </div>
+            {
+                message && (
+                    <div className={`p-4 rounded-md ${message.type === 'success' ? 'bg-green-100 text-green-800' : 'bg-red-100 text-red-800'} whitespace-pre-line`}>
+                        {message.type === 'success' && <Download className="inline-block w-5 h-5 mr-2" />}
+                        {message.text}
+                    </div>
+                )
+            }
+        </div >
     );
 };
 

@@ -6,10 +6,10 @@ import Scanner from '../components/Scanner';
 import { Button } from '../components/ui/Button';
 import { Input } from '../components/ui/Input';
 import { Card, CardHeader, CardTitle, CardContent } from '../components/ui/Card';
-import { Loader2, Camera, Search, FileText, Plus, Trash2, List, Printer } from 'lucide-react';
+import { Loader2, Camera, Search, FileText, Plus, Trash2, List, Printer, LogOut } from 'lucide-react';
 
 const MOGenerate = () => {
-    const { user } = useAuth();
+    const { user, logout } = useAuth();
     const navigate = useNavigate();
     const [scanning, setScanning] = useState(false);
 
@@ -189,8 +189,15 @@ const MOGenerate = () => {
                         <Printer className="w-4 h-4" />
                         <span>補印</span>
                     </Button>
-                    <div className="text-sm text-gray-500 font-medium bg-gray-100 px-3 py-1 rounded-full">
+                    <div className="flex items-center gap-2 text-sm text-gray-500 font-medium bg-gray-100 px-3 py-1 rounded-full">
                         {user?.username}
+                        <button
+                            onClick={logout}
+                            title="登出"
+                            className="ml-2 text-gray-400 hover:text-red-500 transition-colors"
+                        >
+                            <LogOut className="w-4 h-4" />
+                        </button>
                     </div>
                 </div>
             </div>
