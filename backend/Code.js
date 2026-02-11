@@ -32,11 +32,125 @@ function doPost(e) {
                 return handleGetProductInfo(data);
             case 'createMO':
                 return handleCreateMO(data);
+            case 'batchCreateMO':
+                return handleBatchCreateMO(data);
             default:
                 return createResponse({ status: 'error', message: 'Invalid action' });
         }
     } catch (err) {
         return createResponse({ status: 'error', message: err.toString() });
+    }
+}
+
+// ... existing code ...
+
+/**
+ * Handle Batch Create MO
+ * Expects data.items = [{ partNo, orderNo, quantity, ... }, ...]
+ * Expects data.email, data.username
+ */
+function handleBatchCreateMO(data) {
+    const lock = LockService.getScriptLock();
+    try {
+        lock.waitLock(60000); // Wait longer for batch processing
+
+        const ss = SpreadsheetApp.getActiveSpreadsheet();
+        const moSheet = ss.getSheetByName(SHEET_NAMES.MO_RECORDS);
+        const productSheet = ss.getSheetByName(SHEET_NAMES.PRODUCTS);
+
+        if (!moSheet || !productSheet) return createResponse({ status: 'error', message: 'Sheet not found' });
+
+        const products = productSheet.getDataRange().getValues();
+        const moRecords = moSheet.getDataRange().getValues();
+
+        // 1. Determine Starting Sequence
+        const today = new Date();
+        const year = today.getFullYear();
+        const month = String(today.getMonth() + 1).padStart(2, '0');
+        const prefix = `MO-${year}${month}`; // MO-202310
+
+        let lastNum = 0;
+        if (moRecords.length > 1) {
+            // Find the MAX sequence number in current month to avoid collision
+            // Reverse loop might be faster if sorted, but safe to filter
+            const currentMonthRecords = moRecords.filter(r => String(r[0]).startsWith(prefix));
+            if (currentMonthRecords.length > 0) {
+                const lastId = String(currentMonthRecords[currentMonthRecords.length - 1][0]);
+                const suffix = lastId.substring(prefix.length);
+                lastNum = parseInt(suffix, 10) || 0;
+            }
+        }
+
+        const generatedMOs = [];
+        const pdfBlobs = [];
+        const errors = [];
+
+        // 2. Process Items
+        for (const item of data.items) {
+            try {
+                // Product Lookup
+                const productRow = products.find(row => String(row[0]) === String(item.partNo));
+                if (!productRow) {
+                    errors.push(`料號 ${item.partNo} 找不到`);
+                    continue;
+                }
+
+                // Increment ID
+                lastNum++;
+                const newSeq = String(lastNum).padStart(4, '0');
+                const newMoId = `${prefix}${newSeq}`;
+
+                // Prepare Row
+                const newRecord = [
+                    newMoId,
+                    today,
+                    item.partNo,
+                    item.orderNo,
+                    productRow[1], // Name
+                    productRow[2], // Customer Part No
+                    productRow[3], // Material
+                    item.quantity,
+                    ...productRow.slice(4, 22), // Stations
+                    productRow[productRow.length - 1] // Model
+                ];
+
+                // Save to Sheet
+                moSheet.appendRow(newRecord);
+
+                // Generate PDF
+                const pdfBlob = createPDF(newRecord, ss);
+                if (pdfBlob) {
+                    pdfBlobs.push(pdfBlob);
+                }
+
+                generatedMOs.push(newMoId);
+
+            } catch (err) {
+                errors.push(`處理項目 ${item.partNo} 時發生錯誤: ${err.message}`);
+            }
+        }
+
+        // 3. Send Batch Email
+        if (data.email && pdfBlobs.length > 0) {
+            MailApp.sendEmail({
+                to: data.email,
+                subject: `批量製令通知 - ${generatedMOs.length} 筆成功`,
+                body: `您好，\n\n已為您批量生成 ${generatedMOs.length} 筆製令。\n單號範圍: ${generatedMOs[0]} ~ ${generatedMOs[generatedMOs.length - 1]}\n\n請查收附件。\n\n系統自動發送`,
+                attachments: pdfBlobs
+            });
+        }
+
+        return createResponse({
+            status: 'success',
+            message: `成功生成 ${generatedMOs.length} 筆製令。` + (errors.length > 0 ? `\n(警告: 有 ${errors.length} 筆失敗)` : ''),
+            generatedMOs: generatedMOs,
+            errors: errors
+        });
+
+    } catch (e) {
+        return createResponse({ status: 'error', message: e.toString() });
+    } finally {
+        lock.releaseLock();
     }
 }
 
