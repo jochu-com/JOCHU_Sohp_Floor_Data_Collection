@@ -52,6 +52,7 @@ function doPost(e) {
 function handleBatchCreateMO(data) {
     const lock = LockService.getScriptLock();
     try {
+        console.log("Starting batchCreateMO with items:", JSON.stringify(data.items));
         lock.waitLock(60000); // Wait longer for batch processing
 
         const ss = SpreadsheetApp.getActiveSpreadsheet();
@@ -88,10 +89,12 @@ function handleBatchCreateMO(data) {
         // 2. Process Items
         for (const item of data.items) {
             try {
+                console.log("Processing item:", item.partNo);
                 // Product Lookup
                 const productRow = products.find(row => String(row[0]) === String(item.partNo));
                 if (!productRow) {
                     errors.push(`料號 ${item.partNo} 找不到`);
+                    console.warn("Product not found:", item.partNo);
                     continue;
                 }
 
@@ -116,28 +119,39 @@ function handleBatchCreateMO(data) {
 
                 // Save to Sheet
                 moSheet.appendRow(newRecord);
+                SpreadsheetApp.flush(); // Flatten changes immediately
 
                 // Generate PDF
+                console.log("Generating PDF for:", newMoId);
                 const pdfBlob = createPDF(newRecord, ss);
                 if (pdfBlob) {
+                    console.log("PDF generated successfully size:", pdfBlob.getBytes().length);
                     pdfBlobs.push(pdfBlob);
+                } else {
+                    console.error("PDF generation returned null for:", newMoId);
                 }
 
                 generatedMOs.push(newMoId);
 
             } catch (err) {
+                console.error("Error processing item:", err);
                 errors.push(`處理項目 ${item.partNo} 時發生錯誤: ${err.message}`);
             }
         }
 
+        console.log("Batch processing finished. Generated:", generatedMOs.length, "PDFs:", pdfBlobs.length);
+
         // 3. Send Batch Email
         if (data.email && pdfBlobs.length > 0) {
+            console.log("Sending email to:", data.email);
             MailApp.sendEmail({
                 to: data.email,
                 subject: `批量製令通知 - ${generatedMOs.length} 筆成功`,
                 body: `您好，\n\n已為您批量生成 ${generatedMOs.length} 筆製令。\n單號範圍: ${generatedMOs[0]} ~ ${generatedMOs[generatedMOs.length - 1]}\n\n請查收附件。\n\n系統自動發送`,
                 attachments: pdfBlobs
             });
+        } else {
+            console.warn("Skip email. Email:", data.email, "PDF count:", pdfBlobs.length);
         }
 
         return createResponse({
@@ -148,6 +162,7 @@ function handleBatchCreateMO(data) {
         });
 
     } catch (e) {
+        console.error("Fatal error in batchCreateMO:", e);
         return createResponse({ status: 'error', message: e.toString() });
     } finally {
         lock.releaseLock();
