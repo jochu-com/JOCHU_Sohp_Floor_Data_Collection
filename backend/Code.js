@@ -622,8 +622,8 @@ function fillSheetWithData(sheet, recordData) {
                     const img = sheet.insertImage(imageBlob, c, r);
 
                     // Resize Logic
-                    // 1. Force Width = 175
-                    const TARGET_WIDTH = 175;
+                    // 1. Force Width = 350
+                    const TARGET_WIDTH = 350;
 
                     const w = img.getWidth();
                     const h = img.getHeight();
@@ -661,8 +661,8 @@ function fillSheetWithData(sheet, recordData) {
                 const c = cell.getColumn();
                 cell.clearContent();
                 const img = sheet.insertImage(qrBlob, c, r);
-                img.setWidth(175);
-                img.setHeight(175);
+                img.setWidth(350);
+                img.setHeight(350);
             }
         }
     } catch (e) {
