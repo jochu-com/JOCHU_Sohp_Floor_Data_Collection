@@ -164,6 +164,26 @@ const MOGenerate = () => {
             if (res.status === 'success') {
                 setMessage({ type: 'success', text: res.message });
                 setPendingItems([]); // Clear list
+
+                // Trigger Download
+                if (res.pdfBase64) {
+                    const byteCharacters = atob(res.pdfBase64);
+                    const byteNumbers = new Array(byteCharacters.length);
+                    for (let i = 0; i < byteCharacters.length; i++) {
+                        byteNumbers[i] = byteCharacters.charCodeAt(i);
+                    }
+                    const byteArray = new Uint8Array(byteNumbers);
+                    const blob = new Blob([byteArray], { type: 'application/pdf' });
+
+                    const url = window.URL.createObjectURL(blob);
+                    const a = document.createElement('a');
+                    a.href = url;
+                    a.download = res.fileName || `批量製令.pdf`;
+                    document.body.appendChild(a);
+                    a.click();
+                    document.body.removeChild(a);
+                    window.URL.revokeObjectURL(url);
+                }
             } else {
                 setMessage({ type: 'error', text: res.message });
             }

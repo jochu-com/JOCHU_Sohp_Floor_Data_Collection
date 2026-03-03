@@ -192,6 +192,15 @@ function handleBatchCreateMO(data) {
         console.log("Batch finished. MOs:", generatedMOs.length, "PDF Blob:", pdfBlob ? "Created" : "Null");
 
         // 4. Send Batch Email (Single Attachment)
+        let base64Data = null;
+        if (pdfBlob) {
+            try {
+                base64Data = Utilities.base64Encode(pdfBlob.getBytes());
+            } catch (e) {
+                console.warn("Base64 encode error:", e);
+            }
+        }
+
         if (data.email && pdfBlob) {
             console.log("Sending email to:", data.email);
             MailApp.sendEmail({
@@ -211,7 +220,9 @@ function handleBatchCreateMO(data) {
             status: 'success',
             message: resultMsg,
             generatedMOs: generatedMOs,
-            errors: errors
+            errors: errors,
+            pdfBase64: base64Data,
+            fileName: `批量製令單_${today.getFullYear()}${String(today.getMonth() + 1).padStart(2, '0')}${String(today.getDate()).padStart(2, '0')}.pdf`
         });
 
     } catch (e) {
@@ -407,6 +418,13 @@ function handleCreateMO(data) {
             return createResponse({ status: 'success', message: '製令已建立，但 PDF 生成異常 (Unknown)', moNumber: newMoId });
         }
 
+        let base64Data = null;
+        try {
+            base64Data = Utilities.base64Encode(pdfBlob.getBytes());
+        } catch (e) {
+            console.warn("Base64 encode error:", e);
+        }
+
         if (data.email) {
             MailApp.sendEmail({
                 to: data.email,
@@ -416,7 +434,13 @@ function handleCreateMO(data) {
             });
         }
 
-        return createResponse({ status: 'success', message: `製令 ${newMoId} 已建立並寄出！`, moNumber: newMoId });
+        return createResponse({
+            status: 'success',
+            message: `製令 ${newMoId} 已建立並寄出！`,
+            moNumber: newMoId,
+            pdfBase64: base64Data,
+            fileName: `製令單_${newMoId}.pdf`
+        });
 
     } catch (e) {
         return createResponse({ status: 'error', message: e.toString() });
