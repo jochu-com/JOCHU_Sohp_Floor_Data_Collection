@@ -24,6 +24,32 @@ const MOGenerate = () => {
     const [loading, setLoading] = useState(false);
     const [message, setMessage] = useState(null);
 
+    // Helper to download base64 PDF
+    const downloadPdf = (base64Data, filename) => {
+        if (!base64Data) return;
+        try {
+            const byteCharacters = atob(base64Data);
+            const byteNumbers = new Array(byteCharacters.length);
+            for (let i = 0; i < byteCharacters.length; i++) {
+                byteNumbers[i] = byteCharacters.charCodeAt(i);
+            }
+            const byteArray = new Uint8Array(byteNumbers);
+            const blob = new Blob([byteArray], { type: 'application/pdf' });
+
+            const url = window.URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = filename || 'download.pdf';
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            window.URL.revokeObjectURL(url);
+        } catch (e) {
+            console.error("Download failed", e);
+            setMessage({ type: 'error', text: 'PDF 下載失敗: ' + e.message });
+        }
+    };
+
     // Handle Scan Result (Support Multiple Items)
     // Format: Order1|Part1|Qty1|Order2|Part2|Qty2...
     const handleScan = async (decodedText) => {
@@ -167,22 +193,7 @@ const MOGenerate = () => {
 
                 // Trigger Download
                 if (res.pdfBase64) {
-                    const byteCharacters = atob(res.pdfBase64);
-                    const byteNumbers = new Array(byteCharacters.length);
-                    for (let i = 0; i < byteCharacters.length; i++) {
-                        byteNumbers[i] = byteCharacters.charCodeAt(i);
-                    }
-                    const byteArray = new Uint8Array(byteNumbers);
-                    const blob = new Blob([byteArray], { type: 'application/pdf' });
-
-                    const url = window.URL.createObjectURL(blob);
-                    const a = document.createElement('a');
-                    a.href = url;
-                    a.download = res.fileName || `批量製令.pdf`;
-                    document.body.appendChild(a);
-                    a.click();
-                    document.body.removeChild(a);
-                    window.URL.revokeObjectURL(url);
+                    downloadPdf(res.pdfBase64, res.fileName || `批量製令.pdf`);
                 }
             } else {
                 setMessage({ type: 'error', text: res.message });
